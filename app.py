@@ -34,7 +34,13 @@ live: dict[str, LiveSync] = {}
 
 
 def kb(*rows):
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=x, callback_data=y) for x, y in row] for row in rows])
+    normalized = []
+    for row in rows:
+        # A single button is conveniently passed as (text, callback_data).
+        if len(row) == 2 and all(isinstance(item, str) for item in row):
+            row = (row,)
+        normalized.append([InlineKeyboardButton(text=text, callback_data=data) for text, data in row])
+    return InlineKeyboardMarkup(inline_keyboard=normalized)
 
 
 def load():
