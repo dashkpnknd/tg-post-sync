@@ -12,6 +12,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telethon.errors import SessionPasswordNeededError
+from telethon import utils
 
 from sync_engine import LiveSync, make_client, migrate_history
 
@@ -179,6 +180,41 @@ async def task_client(task):
     return client
 
 
+async def show_channel_choice(message, user_id: int, field: str, edit: bool = True):
+    states[user_id]["step"] = f"task_{field}_choice"
+    label = "источник" if field == "source" else "канал-получатель"
+    text = f"Выберите {label}:\n\nМожно ввести публичную ссылку / @username либо открыть список доступных каналов и групп подключённого аккаунта."
+    markup = kb(("✍️ Ввести ссылку", f"wizard:{field}:manual"), ("📂 Выбрать из моих каналов", f"wizard:{field}:list"))
+    if edit: await message.edit_text(text, reply_markup=markup)
+    else: await message.answer(text, reply_markup=markup)
+
+
+async def show_account_channels(call: CallbackQuery, field: str):
+    state = states.get(call.from_user.id)
+    if not state or not state.get("account_id"):
+        await call.answer("Мастер создания задачи завершён", show_alert=True); return
+    account = load()["accounts"].get(state["account_id"])
+    if not account:
+        await call.answer("Аккаунт не найден", show_alert=True); return
+    client = make_client(API_ID, API_HASH, account["session"])
+    try:
+        await client.connect()
+        rows = []
+        async for dialog in client.iter_dialogs(limit=200):
+            if not (dialog.is_channel or dialog.is_group): continue
+            title = (getattr(dialog.entity, "title", None) or dialog.name or "Без названия")[:50]
+            peer = utils.get_peer_id(dialog.entity)
+            rows.append((title, f"wizard:pick:{field}:{peer}"))
+        rows.append(("← Ввести ссылку", f"wizard:{field}:manual"))
+        await call.answer()
+        await call.message.edit_text("Выберите канал или группу:\nЗакрытые каналы тоже отображаются, если аккаунт уже в них состоит.", reply_markup=kb(*rows))
+    except Exception as exc:
+        log.exception("Cannot list channels")
+        await call.answer(f"Не удалось загрузить каналы: {exc}", show_alert=True)
+    finally:
+        with contextlib.suppress(Exception): await client.disconnect()
+
+
 @dp.callback_query(F.data.startswith("task:check:"))
 async def task_check(call: CallbackQuery):
     task = load()["tasks"].get(call.data.rsplit(":", 1)[1])
@@ -262,7 +298,7 @@ async def text_input(message: Message):
     elif step == "task_name":
         state.update(step="task_account", name=text); data = load(); rows = [(a["name"], f"task:account:{key}") for key, a in data["accounts"].items()]; await message.answer("Выберите аккаунт:", reply_markup=kb(*rows))
     elif step == "task_source":
-        state.update(step="task_target", source=text); await message.answer("Ссылка или @username вашего канала-получателя:")
+        state["source"] = text; await show_channel_choice(message, message.from_user.id, "target", edit=False)
     elif step == "task_target":
         state.update(step="task_count", target=text); await message.answer("Сколько последних постов перенести в историю? Введите число, либо 0 для всех:")
     elif step == "task_count":
@@ -289,7 +325,34 @@ async def text_input(message: Message):
 async def choose_task_account(call: CallbackQuery):
     state = states.get(call.from_user.id)
     if not state or state.get("step") != "task_account": await call.answer("Мастер уже завершён", show_alert=True); return
-    state.update(step="task_source", account_id=call.data.rsplit(":", 1)[1]); await call.answer(); await call.message.edit_text("Ссылка или @username канала-источника:")
+    state["account_id"] = call.data.rsplit(":", 1)[1]
+    await call.answer(); await show_channel_choice(call.message, call.from_user.id, "source")
+
+
+@dp.callback_query(F.data.startswith("wizard:"))
+async def task_channel_wizard(call: CallbackQuery):
+    parts = call.data.split(":")
+    if len(parts) < 3: return
+    if parts[1] == "pick":
+        action, field, tail = "pick", parts[2], parts[3:]
+    else:
+        field, action, tail = parts[1], parts[2], parts[3:]
+    state = states.get(call.from_user.id)
+    if not state or field not in ("source", "target"):
+        await call.answer("Мастер создания задачи завершён", show_alert=True); return
+    if action == "list":
+        await show_account_channels(call, field); return
+    if action == "manual":
+        state["step"] = f"task_{field}"
+        label = "канала-источника" if field == "source" else "вашего канала-получателя"
+        await call.answer(); await call.message.edit_text(f"Введите ссылку или @username {label}:")
+    elif action == "pick" and tail:
+        state[field] = int(tail[0])
+        await call.answer("Канал выбран")
+        if field == "source": await show_channel_choice(call.message, call.from_user.id, "target")
+        else:
+            state["step"] = "task_count"
+            await call.message.edit_text("Сколько последних постов перенести в историю? Введите число, либо 0 для всех:")
 
 
 async def finish_account(message):
