@@ -46,7 +46,8 @@ async def migrate_history(
 ) -> tuple[int, int, list[str]]:
     """Edit destination placeholders from newest to oldest. Returns copied/skipped/errors."""
     source_posts = await newest_posts(client, source, count)
-    target_posts = (await newest_posts(client, target, count + target_skip))[target_skip:]
+    target_limit = 0 if count == 0 else count + target_skip
+    target_posts = (await newest_posts(client, target, target_limit))[target_skip:]
     total = min(len(source_posts), len(target_posts))
     errors: list[str] = []
     done = 0
