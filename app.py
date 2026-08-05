@@ -157,8 +157,11 @@ async def task_card(call, key):
     if not task: await call.answer("Задача не найдена", show_alert=True); return
     status = "🟢 непрерывная синхронизация" if key in live else "⚪ остановлена"
     text = (f"{task['name']}\n\n{status}\nИсточник: {task['source']}\nПолучатель: {task['target']}\n"
-            f"История: {task['history_count']} последних постов\n\nИстория редактирует существующие посты получателя: новый к новому.")
+            f"История: {task['history_count']} последних постов\n"
+            f"Пропустить в получателе: {task.get('target_skip', 0)}\n\n"
+            "История редактирует существующие посты получателя: новый к новому.")
     rows = [("🧪 Проверить доступ", f"task:check:{key}"), ("📚 Загрузить историю", f"task:history:{key}"),
+            ("⏭ Настроить пропуск", f"task:skip:{key}"),
             (("⏹ Остановить поток", f"task:stop:{key}") if key in live else ("▶️ Запустить поток", f"task:start:{key}")),
             ("🗑 Удалить", f"task:delete:{key}"), ("← Назад", "tasks")]
     await call.answer(); await call.message.edit_text(text, reply_markup=kb(*rows))
@@ -194,7 +197,7 @@ async def task_history(call: CallbackQuery):
         client = await task_client(task)
         async def progress(done, total, error):
             if done == total or done % 10 == 0: await call.message.edit_text(f"История: {done}/{total}. Ошибок: {error or 'нет'}")
-        done, total, errors = await migrate_history(client, task["source"], task["target"], task["history_count"], progress)
+        done, total, errors = await migrate_history(client, task["source"], task["target"], task["history_count"], task.get("target_skip", 0), progress)
         await client.disconnect(); await call.message.edit_text(f"Готово: {done}/{total}. Ошибок: {len(errors)}", reply_markup=kb(("← К задаче", f"task:view:{key}")))
     except Exception as exc:
         log.exception("Migration failed"); await call.message.edit_text(f"Миграция не выполнена: {exc}", reply_markup=kb(("← К задаче", f"task:view:{key}")))
@@ -221,6 +224,15 @@ async def task_delete(call: CallbackQuery):
     key = call.data.rsplit(":", 1)[1]
     if key in live: await live.pop(key).stop()
     data = load(); data["tasks"].pop(key, None); save(data); await tasks(call)
+
+
+@dp.callback_query(F.data.startswith("task:skip:"))
+async def task_skip(call: CallbackQuery):
+    key = call.data.rsplit(":", 1)[1]
+    if key not in load()["tasks"]:
+        await call.answer("Задача не найдена", show_alert=True); return
+    states[call.from_user.id] = {"step": "edit_skip", "task_id": key}
+    await call.answer(); await call.message.edit_text("Сколько самых свежих постов получателя оставить без изменений?\n\nНапример, 2 — бот начнёт замену с третьего поста.")
 
 
 @dp.message(F.text)
@@ -256,8 +268,20 @@ async def text_input(message: Message):
     elif step == "task_count":
         try:
             count = int(text); assert count >= 0
-            key = uuid.uuid4().hex[:10]; data = load(); data["tasks"][key] = {"name": state["name"], "account_id": state["account_id"], "source": state["source"], "target": state["target"], "source_id": state["source"], "target_id": state["target"], "history_count": count}; save(data); states.pop(message.from_user.id, None)
+            state.update(step="task_skip", history_count=count)
+            await message.answer("Сколько последних постов получателя пропустить? Введите 0, если пропуск не нужен.")
+        except Exception: await message.answer("Введите неотрицательное целое число.")
+    elif step == "task_skip":
+        try:
+            skip = int(text); assert skip >= 0
+            key = uuid.uuid4().hex[:10]; data = load(); data["tasks"][key] = {"name": state["name"], "account_id": state["account_id"], "source": state["source"], "target": state["target"], "source_id": state["source"], "target_id": state["target"], "history_count": state["history_count"], "target_skip": skip}; save(data); states.pop(message.from_user.id, None)
             await message.answer("Задача создана.", reply_markup=kb(("Открыть задачу", f"task:view:{key}"), ("Главное меню", "home")))
+        except Exception: await message.answer("Введите неотрицательное целое число.")
+    elif step == "edit_skip":
+        try:
+            skip = int(text); assert skip >= 0
+            key = state["task_id"]; data = load(); data["tasks"][key]["target_skip"] = skip; save(data); states.pop(message.from_user.id, None)
+            await message.answer(f"Готово: пропускаем {skip} последних постов получателя.", reply_markup=kb(("Открыть задачу", f"task:view:{key}")))
         except Exception: await message.answer("Введите неотрицательное целое число.")
 
 

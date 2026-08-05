@@ -41,11 +41,12 @@ async def migrate_history(
     source,
     target,
     count: int,
+    target_skip: int = 0,
     progress: Callable[[int, int, str], Awaitable[None]] | None = None,
 ) -> tuple[int, int, list[str]]:
     """Edit destination placeholders from newest to oldest. Returns copied/skipped/errors."""
     source_posts = await newest_posts(client, source, count)
-    target_posts = await newest_posts(client, target, count)
+    target_posts = (await newest_posts(client, target, count + target_skip))[target_skip:]
     total = min(len(source_posts), len(target_posts))
     errors: list[str] = []
     done = 0
