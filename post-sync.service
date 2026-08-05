@@ -1,0 +1,15 @@
+[Unit]
+Description=Post Sync Telegram control bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/github-sync/tg-post-sync
+EnvironmentFile=/root/github-sync/tg-post-sync/.env
+ExecStart=/root/github-sync/tg-post-sync/.venv/bin/python /root/github-sync/tg-post-sync/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

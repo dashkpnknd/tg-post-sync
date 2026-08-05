@@ -1,0 +1,4 @@
+aiogram>=3.13,<4
+Telethon>=1.36,<2
+qrcode[pil]>=7.4
+PySocks>=1.7

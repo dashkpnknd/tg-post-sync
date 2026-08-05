@@ -1,0 +1,8 @@
+.env
+data.json
+*.session
+*.session-journal
+__pycache__/
+*.pyc
+.venv/
+runtime/
