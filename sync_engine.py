@@ -88,6 +88,29 @@ async def migrate_history(
     return done, total, errors
 
 
+async def cleanup_plan(client: TelegramClient, source, target, count: int, target_skip: int = 0):
+    """List raw destination messages that are outside the protected migration area."""
+    source_posts = await newest_posts(client, source, count)
+    target_posts = await newest_posts(client, target, 0)
+    copied_count = min(len(source_posts), max(0, len(target_posts) - target_skip))
+    protected = target_posts[:target_skip + copied_count]
+    protected_ids = {item.id for item in protected}
+    protected_groups = {item.grouped_id for item in protected if item.grouped_id}
+    candidates = []
+    async for message in client.iter_messages(target):
+        if message.id in protected_ids or (message.grouped_id and message.grouped_id in protected_groups):
+            continue
+        candidates.append(message.id)
+    return candidates, target_skip, copied_count
+
+
+async def cleanup_untouched(client: TelegramClient, source, target, count: int, target_skip: int = 0):
+    candidates, skipped, copied = await cleanup_plan(client, source, target, count, target_skip)
+    for start in range(0, len(candidates), 100):
+        await client.delete_messages(target, candidates[start:start + 100])
+    return len(candidates), skipped, copied
+
+
 class LiveSync:
     def __init__(self, task: dict, api_id: int, api_hash: str):
         self.task = task

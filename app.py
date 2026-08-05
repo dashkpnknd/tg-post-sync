@@ -14,7 +14,7 @@ from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, Inli
 from telethon.errors import SessionPasswordNeededError
 from telethon import utils
 
-from sync_engine import LiveSync, make_client, migrate_history
+from sync_engine import LiveSync, cleanup_plan, cleanup_untouched, make_client, migrate_history
 
 BASE = Path(__file__).parent
 DATA = BASE / "data.json"
@@ -163,6 +163,7 @@ async def task_card(call, key):
             "История редактирует существующие посты получателя: новый к новому.")
     rows = [("🧪 Проверить доступ", f"task:check:{key}"), ("📚 Загрузить историю", f"task:history:{key}"),
             ("⏭ Настроить пропуск", f"task:skip:{key}"),
+            ("🗑 Очистить неиспользованные", f"task:cleanup:{key}"),
             (("⏹ Остановить поток", f"task:stop:{key}") if key in live else ("▶️ Запустить поток", f"task:start:{key}")),
             ("🗑 Удалить", f"task:delete:{key}"), ("← Назад", "tasks")]
     await call.answer(); await call.message.edit_text(text, reply_markup=kb(*rows))
@@ -263,6 +264,41 @@ async def task_delete(call: CallbackQuery):
     key = call.data.rsplit(":", 1)[1]
     if key in live: await live.pop(key).stop()
     data = load(); data["tasks"].pop(key, None); save(data); await tasks(call)
+
+
+@dp.callback_query(F.data.startswith("task:cleanup:"))
+async def task_cleanup_preview(call: CallbackQuery):
+    key = call.data.rsplit(":", 1)[1]; task = load()["tasks"].get(key)
+    try:
+        client = await task_client(task)
+        candidates, skipped, copied = await cleanup_plan(client, task["source"], task["target"], task["history_count"], task.get("target_skip", 0))
+        await client.disconnect()
+        states[call.from_user.id] = {"step": "cleanup_confirm", "task_id": key}
+        await call.answer()
+        await call.message.edit_text(
+            f"Будут удалены: {len(candidates)} старых неиспользованных постов.\n"
+            f"Останутся: {skipped} пропущенных и {copied} заменённых постов.\n\n"
+            "Действие необратимо.",
+            reply_markup=kb(("✅ Удалить указанные посты", f"task:cleanup_confirm:{key}"), ("← Отмена", f"task:view:{key}")),
+        )
+    except Exception as exc:
+        log.exception("Cleanup preview failed"); await call.answer(f"Не удалось проверить: {exc}", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("task:cleanup_confirm:"))
+async def task_cleanup_confirm(call: CallbackQuery):
+    key = call.data.rsplit(":", 1)[1]; state = states.get(call.from_user.id)
+    if not state or state.get("step") != "cleanup_confirm" or state.get("task_id") != key:
+        await call.answer("Сначала откройте предварительный просмотр", show_alert=True); return
+    task = load()["tasks"].get(key)
+    try:
+        await call.answer(); await call.message.edit_text("Удаляю только посты вне защищённой области задачи...")
+        client = await task_client(task)
+        deleted, skipped, copied = await cleanup_untouched(client, task["source"], task["target"], task["history_count"], task.get("target_skip", 0))
+        await client.disconnect(); states.pop(call.from_user.id, None)
+        await call.message.edit_text(f"Удалено: {deleted}. Сохранено: {skipped} пропущенных и {copied} заменённых.", reply_markup=kb(("← К задаче", f"task:view:{key}")))
+    except Exception as exc:
+        log.exception("Cleanup failed"); await call.message.edit_text(f"Удаление не выполнено: {exc}", reply_markup=kb(("← К задаче", f"task:view:{key}")))
 
 
 @dp.callback_query(F.data.startswith("task:skip:"))
