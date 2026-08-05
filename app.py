@@ -224,7 +224,8 @@ async def text_input(message: Message):
     if not state: return
     text = message.text.strip(); step = state["step"]
     if step == "account_name":
-        state.update(step="phone", name=text); await message.answer("Номер телефона в международном формате, например +79990000000:")
+        state.update(step="account_auth", name=text)
+        await message.answer("Способ входа:", reply_markup=kb(("📱 По номеру", "account:auth:phone"), ("🔳 По QR-коду", "account:auth:qr")))
     elif step == "phone":
         try:
             client = make_client(API_ID, API_HASH, ""); await client.connect(); sent = await client.send_code_request(text)
@@ -263,8 +264,56 @@ async def choose_task_account(call: CallbackQuery):
 
 async def finish_account(message):
     state = states[message.from_user.id]; client = clients[message.from_user.id]; key = uuid.uuid4().hex[:10]; data = load()
-    data["accounts"][key] = {"name": state["name"], "phone": state["phone"], "session": client.session.save()}; save(data)
+    data["accounts"][key] = {"name": state["name"], "phone": state.get("phone", "QR-вход"), "session": client.session.save()}; save(data)
     await clear(message.from_user.id); await message.answer("Аккаунт добавлен.", reply_markup=kb(("К аккаунтам", "accounts"), ("Главное меню", "home")))
+
+
+@dp.callback_query(F.data == "account:auth:phone")
+async def account_auth_phone(call: CallbackQuery):
+    state = states.get(call.from_user.id)
+    if not state or state.get("step") != "account_auth":
+        await call.answer("Начните добавление аккаунта заново", show_alert=True); return
+    state["step"] = "phone"
+    await call.answer(); await call.message.edit_text("Номер телефона в международном формате, например +79990000000:")
+
+
+@dp.callback_query(F.data == "account:auth:qr")
+async def account_auth_qr(call: CallbackQuery):
+    state = states.get(call.from_user.id)
+    if not state or state.get("step") != "account_auth":
+        await call.answer("Начните добавление аккаунта заново", show_alert=True); return
+    try:
+        client = make_client(API_ID, API_HASH, "")
+        await client.connect()
+        qr_login = await client.qr_login()
+        path = RUNTIME / f"login-{call.from_user.id}.png"
+        qrcode.make(qr_login.url).save(path)
+        clients[call.from_user.id] = client
+        state["step"] = "qr"
+        await call.answer(); await call.message.edit_text("QR-код отправлен. Откройте Telegram: Настройки → Устройства → Подключить устройство.")
+        await bot.send_photo(call.message.chat.id, FSInputFile(path), caption="Срок действия QR — 2 минуты.")
+        asyncio.create_task(wait_qr(call.message, call.from_user.id, qr_login))
+    except Exception as exc:
+        log.exception("QR login failed")
+        await call.answer(f"QR не создан: {exc}", show_alert=True)
+
+
+async def wait_qr(message: Message, user_id: int, qr_login):
+    try:
+        await asyncio.wait_for(qr_login.wait(), timeout=120)
+        if states.get(user_id, {}).get("step") != "qr": return
+        await finish_account(message)
+    except SessionPasswordNeededError:
+        if user_id in states:
+            states[user_id]["step"] = "password"
+            await message.answer("QR подтверждён. Введите пароль двухфакторной защиты:")
+    except asyncio.TimeoutError:
+        await clear(user_id)
+        await message.answer("Срок действия QR истёк. Добавьте аккаунт заново.")
+    except Exception:
+        log.exception("QR wait failed")
+        await clear(user_id)
+        await message.answer("Не удалось завершить QR-вход. Попробуйте ещё раз.")
 
 
 async def main():
