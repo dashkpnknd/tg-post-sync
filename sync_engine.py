@@ -17,21 +17,32 @@ def make_client(api_id: int, api_hash: str, session: str) -> TelegramClient:
 async def copy_message(client: TelegramClient, source, target, message) -> None:
     """Copy a message without source attribution, preserving its media and caption."""
     if message.media:
-        await client.send_file(target, message.media, caption=message.message or "")
+        await client.send_file(
+            target, message.media, caption=message.message or "",
+            formatting_entities=message.entities or None,
+        )
     elif message.message:
-        await client.send_message(target, message.message, link_preview=bool(message.web_preview))
+        await client.send_message(
+            target, message.message, link_preview=bool(message.web_preview),
+            formatting_entities=message.entities or None,
+        )
 
 
 async def newest_posts(client: TelegramClient, peer, limit: int | None):
     """Return newest-first logical posts. An album is represented by its newest item."""
-    posts, groups = [], set()
+    posts, group_indexes = [], {}
     async for message in client.iter_messages(peer, limit=None if limit == 0 else limit):
         if message.action:
             continue
         if message.grouped_id:
-            if message.grouped_id in groups:
+            if message.grouped_id in group_indexes:
+                # Telegram puts an album caption on only one item. Keep that item
+                # so the single copied photo retains the original formatted caption.
+                index = group_indexes[message.grouped_id]
+                if message.message and not posts[index].message:
+                    posts[index] = message
                 continue
-            groups.add(message.grouped_id)
+            group_indexes[message.grouped_id] = len(posts)
         posts.append(message)
     return posts
 
@@ -53,16 +64,20 @@ async def migrate_history(
     done = 0
     for index, (src, dst) in enumerate(zip(source_posts[:total], target_posts[:total]), 1):
         try:
-            # Telegram cannot turn one existing message into an album. For an album,
-            # replace the newest placeholder with the newest media item and report it.
-            if src.grouped_id:
-                errors.append(f"Источник #{src.id}: альбом требует ручной проверки")
-            await client.edit_message(target, dst.id, src.message or "", file=src.media)
+            # One existing message cannot become an album. Copy only one photo/video
+            # and its caption; remaining album files are deliberately skipped.
+            await client.edit_message(
+                target, dst.id, src.message or "", file=src.media,
+                formatting_entities=src.entities or None,
+            )
             done += 1
         except FloodWaitError as exc:
             await asyncio.sleep(exc.seconds + 1)
             try:
-                await client.edit_message(target, dst.id, src.message or "", file=src.media)
+                await client.edit_message(
+                    target, dst.id, src.message or "", file=src.media,
+                    formatting_entities=src.entities or None,
+                )
                 done += 1
             except Exception as retry_error:
                 errors.append(f"#{src.id}: {retry_error}")
