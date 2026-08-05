@@ -246,19 +246,6 @@ async def task_history(call: CallbackQuery):
 async def task_start(call: CallbackQuery):
     key = call.data.rsplit(":", 1)[1]; task = load()["tasks"].get(key)
     try:
-        if not task.get("history_done"):
-            await call.answer()
-            await call.message.edit_text("Первый запуск: переношу историю, затем включу копирование новых постов.")
-            client = await task_client(task)
-            done, total, errors = await migrate_history(
-                client, task["source"], task["target"], task["history_count"], task.get("target_skip", 0)
-            )
-            await client.disconnect()
-            if errors:
-                await call.message.edit_text(f"История: {done}/{total}, ошибок: {len(errors)}. Поток новых постов не включён — проверьте задачу.")
-                return
-            data = load(); data["tasks"][key]["history_done"] = True; save(data)
-            task = data["tasks"][key]
         account = load()["accounts"][task["account_id"]]; worker = LiveSync({**task, "session": account["session"]}, API_ID, API_HASH); await worker.start(); live[key] = worker
         await task_card(call, key)
     except Exception as exc: await call.answer(f"Не запущено: {exc}", show_alert=True)
