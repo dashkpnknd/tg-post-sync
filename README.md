@@ -19,3 +19,7 @@ All setup is performed in the bot UI:
 The account connected with Telethon must be able to read the source and publish/edit messages in the destination. Telegram does not allow changing a message date: history migration edits existing destination posts, preserving their original dates.
 
 Never commit `.env` or `data.json`: they contain the bot token and Telegram account sessions.
+
+## Связи и границы проекта
+
+Этот проект следит за новыми публикациями канала-источника и копирует их в другой канал. `tg-channel-transfer` решает задачу переноса сообщений между чатами; сходство задач не означает общего кода или общего процесса.
